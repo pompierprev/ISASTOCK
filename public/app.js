@@ -52,55 +52,55 @@
     render();
     setStatus('');
   }
-
 /* ---------- Fusion en cas de conflit ---------- */
 function fusionner(serveur) {
-  // Comptes : union par id (priorité à la version serveur pour les champs modifiés)
   const parId = (arr) => { const m = new Map(); (arr || []).forEach(x => m.set(x.id, x)); return m; };
-  const sm = parId(serveur.comptes), lm = parId(state.comptes);
-  sm.forEach((v, k) => { if (!lm.has(k)) lm.set(k, v); });           // lignes du serveur absentes localement
-  state.comptes = [...lm.values()];
 
-  // Familles/produits : même logique — on ajoute les produits/nouveautés du serveur,
-  // et pour les quantités on garde la plus élevée (le + de l'autre appareil n'est pas perdu)
+  // Comptes : union par id
+  const cm = parId([...(serveur.comptes || []), ...state.comptes]);
+  state.comptes = [...cm.values()];
+
+  // Familles/produits : union + quantité max (aucun + n'est perdu)
   const famsLoc = parId(state.familles);
   (serveur.familles || []).forEach(fs => {
     const fl = famsLoc.get(fs.id);
     if (!fl) { famsLoc.set(fs.id, fs); return; }
-    const prodsLoc = parId(fl.produits);
+    const prods = parId(fl.produits);
     (fs.produits || []).forEach(ps => {
-      const pl = prodsLoc.get(ps.id);
-      if (!pl) { prodsLoc.set(ps.id, ps); return; }
-      pl.nom = pl.nom || ps.nom;
+      const pl = prods.get(ps.id);
+      if (!pl) { prods.set(ps.id, ps); return; }
       pl.garage = Math.max(pl.garage | 0, ps.garage | 0);
       pl.maison = Math.max(pl.maison | 0, ps.maison | 0);
     });
-    fl.produits = [...prodsLoc.values()];
+    fl.produits = [...prods.values()];
   });
   state.familles = [...famsLoc.values()];
 
-  // Courses : union par id (un article coché reste coché si l'un des deux l'a fait)
-  state.courses.fresh = [...parId([...serveur.courses.fresh, ...state.courses.fresh]).values()]
-    .map(c => ({ ...c, fait: c.fait || (serveur.courses.fresh.find(x => x.id === c.id) || {}).fait || false }));
+  // Courses : union par id, "fait" si coché sur l'un des deux
+  const fusionListe = (srvList, locList) => {
+    const m = parId(srvList || []);
+    (locList || []).forEach(c => {
+      const s = m.get(c.id);
+      if (!s) m.set(c.id, c);
+      else s.fait = s.fait || c.fait;
+    });
+    return [...m.values()];
+  };
+  state.courses.fresh = fusionListe(serveur.courses.fresh, state.courses.fresh);
   RAYONS.forEach(r => {
-    const loc = state.courses.leclerc[r.id] || [], srv = (serveur.courses.leclerc[r.id]) || [];
-    const m = parId([...srv, ...loc]);
-    state.courses.leclerc[r.id] = [...m.values()].map(c => ({
-      ...c, fait: c.fait || srv.find(x => x.id === c.id)?.fait || false
-    }));
+    state.courses.leclerc[r.id] = fusionListe(serveur.courses.leclerc[r.id], state.courses.leclerc[r.id]);
   });
 
-  state.rev = serveur.rev;   // on repart de la révision du serveur
+  state.rev = serveur.rev;
 }
 
-/* ---------- Sauvegarde avec reprise sur conflit ---------- */
 function commit(msg) {
   saveChain = saveChain.then(async () => {
     let r = await api('PUT', '/api/data', state);
     if (r.status === 409 && r.data && typeof r.data === 'object' && r.data.rev !== undefined) {
-      fusionner(r.data);              // fusionne au lieu d'écraser
-      r = await api('PUT', '/api/data', state);   // retente une seule fois
-      if (r.status === 200) { state.rev = r.data.rev; setStatus('Synchronisé (conflit fusionné).', false); }
+      fusionner(r.data);
+      r = await api('PUT', '/api/data', state);
+      if (r.status === 200) { state.rev = r.data.rev; setStatus(msg || 'Synchronisé (conflit fusionné).', false); }
       else setStatus('Synchronisation impossible, rechargez la page.', true);
     } else if (r.status === 200) {
       state.rev = r.data.rev;
@@ -112,6 +112,7 @@ function commit(msg) {
   }).catch(() => setStatus('Erreur réseau.', true));
 }
   
+
    /* ---------- Connexion ---------- */
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
