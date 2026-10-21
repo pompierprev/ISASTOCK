@@ -13,7 +13,7 @@ const SESSION_MS = 12 * 60 * 60 * 1000;   // 12 h
 const MAX_FAILS = 5;
 const LOCK_MS = 15 * 60 * 1000;           // 15 min
 
-const store = () => getStore("gestion");
+const store = () => getStore({ name: "gestion", consistency: "strong" });
 
 async function loadDb() {
   const raw = await store().get("data", { type: "json" });
