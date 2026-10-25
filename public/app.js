@@ -13,12 +13,7 @@
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   const videCourses = () => ({ fresh: [], leclerc: { hygiene: [], entretien: [], alimentation: [], boisson: [] } });
-  const JOURS = [['lundi', 'Lundi'], ['mardi', 'Mardi'], ['mercredi', 'Mercredi'], ['jeudi', 'Jeudi'], ['vendredi', 'Vendredi'], ['samedi', 'Samedi'], ['dimanche', 'Dimanche']];
-  const videSemaine = () => ({ debut: '', fin: '', jours: { lundi: '', mardi: '', mercredi: '', jeudi: '', vendredi: '', samedi: '', dimanche: '' } });
-  const videMenus = () => ({ semaines: [videSemaine(), videSemaine()] });
-  const copie = (x) => JSON.parse(JSON.stringify(x));
-  let menusBase = videMenus();   // dernière version synchronisée (sert à fusionner sans rien perdre)
-  const etatVide = () => ({ rev: 0, comptes: [], familles: [], courses: videCourses(), menus: videMenus() });
+  const etatVide = () => ({ rev: 0, comptes: [], familles: [], courses: videCourses() });
   let state = etatVide();
   let saveChain = Promise.resolve();
 
@@ -46,13 +41,6 @@
     state.courses = state.courses || videCourses();
     state.courses.leclerc = state.courses.leclerc || videCourses().leclerc;
     state.familles = state.familles || [];
-    state.menus = state.menus || videMenus();
-    state.menus.semaines = [0, 1].map(i => {
-      const w = (state.menus.semaines || [])[i] || videSemaine();
-      w.jours = Object.assign(videSemaine().jours, w.jours || {});
-      return w;
-    });
-    menusBase = copie(state.menus);
   }
 
   async function loadData() {
@@ -103,15 +91,6 @@ function fusionner(serveur) {
     state.courses.leclerc[r.id] = fusionListe(serveur.courses.leclerc[r.id], state.courses.leclerc[r.id]);
   });
 
-  if (serveur.menus && serveur.menus.semaines) {
-    state.menus.semaines.forEach((w, i) => {
-      const b = menusBase.semaines[i], s = serveur.menus.semaines[i];
-      if (!b || !s) return;
-      ['debut', 'fin'].forEach(k => { if (w[k] === b[k]) w[k] = s[k]; });
-      JOURS.forEach(([k]) => { if (w.jours[k] === b.jours[k]) w.jours[k] = s.jours[k]; });
-    });
-  }
-
   state.rev = serveur.rev;
 }
 
@@ -121,11 +100,10 @@ function commit(msg) {
     if (r.status === 409 && r.data && typeof r.data === 'object' && r.data.rev !== undefined) {
       fusionner(r.data);
       r = await api('PUT', '/api/data', state);
-      if (r.status === 200) { state.rev = r.data.rev; menusBase = copie(state.menus); setStatus(msg || 'Synchronisé (conflit fusionné).', false); }
+      if (r.status === 200) { state.rev = r.data.rev; setStatus(msg || 'Synchronisé (conflit fusionné).', false); }
       else setStatus('Synchronisation impossible, rechargez la page.', true);
     } else if (r.status === 200) {
       state.rev = r.data.rev;
-      menusBase = copie(state.menus);
       if (msg) setStatus(msg, false);
     } else {
       setStatus('Erreur de sauvegarde.', true);
@@ -161,12 +139,11 @@ function commit(msg) {
   document.querySelectorAll('nav button[data-page]').forEach(b => {
     b.addEventListener('click', () => {
       document.querySelectorAll('nav button[data-page]').forEach(x => x.classList.toggle('active', x === b));
-      ['comptes', 'stock', 'courses', 'menus'].forEach(n => { $('#page-' + n).hidden = b.dataset.page !== n; });
+      ['comptes', 'stock', 'courses'].forEach(n => { $('#page-' + n).hidden = b.dataset.page !== n; });
     });
   });
   document.querySelectorAll('[data-print]').forEach(b => b.addEventListener('click', () => window.print()));
   window.addEventListener('beforeprint', () => {
-    renderMenus(true);
     const d = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
     document.querySelectorAll('.print-date').forEach(el => { el.textContent = `Imprimé le ${d}`; });
   });
@@ -266,11 +243,11 @@ function commit(msg) {
       </div>`).join('');
   }
 
-  // Quand il ne reste qu'UN exemplaire d'un produit au GARAGE (quantité = 1 exactement),
+  // Quand le stock TOTAL d'un produit (garage + maison) tombe à 1 ou moins,
   // il est ajouté à la liste LECLERC de la même famille (sans doublon).
-  // À zéro, rien n'est ajouté automatiquement.
-  function verifierCourses(fam, prod, garageAvant) {
-    if (!(prod.garage === 1 && garageAvant !== 1)) return '';
+  function verifierCourses(fam, prod, avant) {
+    const total = prod.garage + prod.maison;
+    if (!(avant > 1 && total <= 1)) return '';
     const liste = state.courses.leclerc[fam.id];
     if (!liste) return '';
     const ou = `LECLERC – ${fam.nom}`;
@@ -278,10 +255,10 @@ function commit(msg) {
     if (deja) {
       if (!deja.fait) return '';
       deja.fait = false;
-      return `« ${prod.nom} » n'a plus qu'un exemplaire au garage : remis à acheter dans ${ou}. Enregistré.`;
+      return `« ${prod.nom} » est presque épuisé : remis à acheter dans ${ou}. Enregistré.`;
     }
     liste.push({ id: uid(), nom: prod.nom, fait: false });
-    return `« ${prod.nom} » n'a plus qu'un exemplaire au garage : ajouté à la liste de courses (${ou}). Enregistré.`;
+    return `« ${prod.nom} » est à ${total} : ajouté à la liste de courses (${ou}). Enregistré.`;
   }
 
   $('#families').addEventListener('click', (e) => {
@@ -298,7 +275,7 @@ function commit(msg) {
       if (!nom) { famEl.querySelector('.pNom').focus(); return; }
       const neuf = { id: uid(), nom, garage, maison };
       fam.produits.push(neuf);
-      const info = verifierCourses(fam, neuf, null);
+      const info = verifierCourses(fam, neuf, Infinity);
       render(); commit(info);
       return;
     }
@@ -306,7 +283,7 @@ function commit(msg) {
     const prod = rowEl && fam.produits.find(p => p.id === rowEl.dataset.prod);
     if (!prod) return;
     const lieu = rowEl.dataset.lieu;
-    const garageAvant = prod.garage;
+    const avant = prod.garage + prod.maison;
     let msg = '';
     if (act === 'plus') prod[lieu]++;                       // aucun effet sur l'autre colonne
     if (act === 'minus') {
@@ -328,7 +305,7 @@ function commit(msg) {
       if (!confirm(`Supprimer « ${prod.nom} » du garage et de la maison ?`)) return;
       fam.produits = fam.produits.filter(p => p !== prod);
     }
-    if (act !== 'delProd') msg = verifierCourses(fam, prod, garageAvant) || msg;
+    if (act !== 'delProd') msg = verifierCourses(fam, prod, avant) || msg;
     render(); commit(msg);
   });
 
@@ -425,76 +402,7 @@ function commit(msg) {
     render(); commit();
   });
 
-  /* ---------- Menus : deux semaines, du lundi au dimanche ---------- */
-  const dateFr = (iso) => { if (!iso) return '…'; const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
-  const plus6 = (iso) => { const t = new Date(iso + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 6); return t.toISOString().slice(0, 10); };
-  let minuteurMenus = null;
-
-  function renderMenus(force) {
-    const zone = $('#menuSections');
-    const actif = document.activeElement;
-    // On ne reconstruit pas la page pendant que vous tapez (sinon le curseur saute)
-    if (!force && actif && zone.contains(actif) && actif.matches('textarea, input')) return;
-    zone.innerHTML = state.menus.semaines.map((w, i) => `
-      <div class="panel" data-semaine="${i}">
-        <div class="menu-head">
-          <h3>Semaine ${i + 1} : du ${dateFr(w.debut)} au ${dateFr(w.fin)}</h3>
-          <button class="btn danger small no-print" data-menu="clear">Effacer les menus</button>
-        </div>
-        <div class="form-row no-print mb14">
-          <div class="field"><label>Semaine du</label><input type="date" class="mDebut" value="${esc(w.debut)}"></div>
-          <div class="field"><label>au</label><input type="date" class="mFin" value="${esc(w.fin)}"></div>
-        </div>
-        <div class="table-wrap">
-          <table class="menuTable">
-            <thead><tr><th>Jour</th><th>Menu</th></tr></thead>
-            <tbody>
-              ${JOURS.map(([k, nom]) => `
-                <tr>
-                  <td class="jour">${nom}</td>
-                  <td>
-                    <textarea class="mJour no-print" data-jour="${k}" rows="2" maxlength="500" aria-label="Menu du ${nom.toLowerCase()}, semaine ${i + 1}">${esc(w.jours[k])}</textarea>
-                    <div class="print-only menu-print">${esc(w.jours[k])}</div>
-                  </td>
-                </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>`).join('');
-  }
-
-  const semaineDe = (el) => state.menus.semaines[Number(el.closest('[data-semaine]').dataset.semaine)];
-
-  $('#menuSections').addEventListener('input', (e) => {
-    if (!e.target.classList.contains('mJour')) return;
-    semaineDe(e.target).jours[e.target.dataset.jour] = e.target.value;
-    clearTimeout(minuteurMenus);
-    minuteurMenus = setTimeout(() => commit('Menus enregistrés.'), 700);
-  });
-  $('#menuSections').addEventListener('change', (e) => {
-    const w = semaineDe(e.target);
-    if (e.target.classList.contains('mJour')) {
-      clearTimeout(minuteurMenus);
-      commit('Menus enregistrés.');
-    } else if (e.target.classList.contains('mDebut') || e.target.classList.contains('mFin')) {
-      const debut = e.target.classList.contains('mDebut');
-      w[debut ? 'debut' : 'fin'] = e.target.value;
-      if (debut && w.debut && !w.fin) w.fin = plus6(w.debut);   // semaine de 7 jours proposée automatiquement
-      renderMenus(true);
-      commit('Menus enregistrés.');
-    }
-  });
-  $('#menuSections').addEventListener('click', (e) => {
-    if (e.target.dataset.menu !== 'clear') return;
-    const w = semaineDe(e.target);
-    const n = state.menus.semaines.indexOf(w) + 1;
-    if (!confirm(`Effacer tous les menus de la semaine ${n} ? Les dates sont conservées.`)) return;
-    JOURS.forEach(([k]) => { w.jours[k] = ''; });
-    renderMenus(true);
-    commit(`Menus de la semaine ${n} effacés.`);
-  });
-
-  function render() { renderComptes(); renderStock(); renderCourses(); renderMenus(); }
+  function render() { renderComptes(); renderStock(); renderCourses(); }
 
   /* ---------- Démarrage ---------- */
   loadData().catch(() => { showLogin(); });
